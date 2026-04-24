@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMarketplaceClient } from "@/src/utils/hooks/useMarketplaceClient";
 import ImageCropEditor, { CropRect, FocusPoint } from "@/src/components/ImageCropEditor";
 import MediaLibraryModal from "@/src/components/MediaLibraryModal";
@@ -8,6 +8,7 @@ import MediaLibraryModal from "@/src/components/MediaLibraryModal";
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface FieldState {
+  imageId:   string;
   imageUrl:  string | null;
   imageName: string;
   naturalW:  number;
@@ -29,11 +30,23 @@ const ASPECTS = [
 ];
 
 const PREVIEWS = [
-  { label: "16:9", w: 156, h: 88 },
-  { label: "1:1",  w: 80,  h: 80 },
-  { label: "4:3",  w: 100, h: 75 },
-  { label: "9:16", w: 44,  h: 78 },
+  { label: "16:9", ar: 16 / 9,  w: 156, h: 88 },
+  { label: "1:1",  ar: 1,       w: 80,  h: 80 },
+  { label: "4:3",  ar: 4  / 3,  w: 100, h: 75 },
+  { label: "9:16", ar: 9  / 16, w: 44,  h: 78 },
 ];
+
+function computeFocusCrop(ar: number, naturalW: number, naturalH: number, fp: FocusPoint): CropRect {
+  if (!naturalW || !naturalH) return DEFAULT_CROP;
+  // Largest crop at this visual aspect ratio that fits the image
+  let w = 100;
+  let h = w * naturalW / (ar * naturalH);
+  if (h > 100) { h = 100; w = h * ar * naturalH / naturalW; }
+  // Center on focus point, clamped inside bounds
+  const x = Math.max(0, Math.min(100 - w, fp.x - w / 2));
+  const y = Math.max(0, Math.min(100 - h, fp.y - h / 2));
+  return { x, y, width: w, height: h };
+}
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
@@ -88,7 +101,7 @@ function CropPreview({ imageUrl, crop, width, height }: { imageUrl: string; crop
 function CropFieldExtension() {
   const { client, isInitialized, error } = useMarketplaceClient();
 
-  const [field, setField]       = useState<FieldState>({ imageUrl: null, imageName: "", naturalW: 0, naturalH: 0, crop: DEFAULT_CROP, focusPoint: DEFAULT_FP });
+  const [field, setField]       = useState<FieldState>({ imageId: "", imageUrl: null, imageName: "", naturalW: 0, naturalH: 0, crop: DEFAULT_CROP, focusPoint: DEFAULT_FP });
   const [mode, setMode]         = useState<"crop" | "focuspoint">("crop");
   const [aspectKey, setAspectKey] = useState("free");
   const [showModal, setShowModal] = useState(false);
@@ -97,24 +110,90 @@ function CropFieldExtension() {
 
   const patch = useCallback((p: Partial<FieldState>) => setField(prev => ({ ...prev, ...p })), []);
 
-  const loadImageUrl = useCallback((url: string, name: string) => {
+  const handleAspectChange = useCallback((key: string, value: number | null) => {
+    setAspectKey(key);
+    if (value === null) return; // free — keep current crop shape
+
+    setField(prev => {
+      const { crop, naturalW, naturalH } = prev;
+      if (!naturalW || !naturalH) return prev;
+
+      // Center of current crop (%)
+      const cx = crop.x + crop.width  / 2;
+      const cy = crop.y + crop.height / 2;
+
+      // Largest crop at requested visual aspect ratio that fits the image.
+      // visual_aspect = (w% * naturalW) / (h% * naturalH) = value
+      let w = 100;
+      let h = w * naturalW / (value * naturalH);
+      if (h > 100) { h = 100; w = h * value * naturalH / naturalW; }
+
+      // Clamp to [0, 100]
+      w = Math.min(w, 100);
+      h = Math.min(h, 100);
+
+      const x = Math.max(0, Math.min(100 - w, cx - w / 2));
+      const y = Math.max(0, Math.min(100 - h, cy - h / 2));
+
+      return { ...prev, crop: { x, y, width: w, height: h } };
+    });
+  }, []);
+
+  const loadImageUrl = useCallback((id: string, url: string, name: string) => {
     const img = new window.Image();
-    img.onload  = () => patch({ imageUrl: url, imageName: name, naturalW: img.naturalWidth, naturalH: img.naturalHeight, crop: DEFAULT_CROP, focusPoint: DEFAULT_FP });
-    img.onerror = () => patch({ imageUrl: url, imageName: name, naturalW: 0, naturalH: 0, crop: DEFAULT_CROP, focusPoint: DEFAULT_FP });
+    img.onload  = () => patch({ imageId: id, imageUrl: url, imageName: name, naturalW: img.naturalWidth, naturalH: img.naturalHeight, crop: DEFAULT_CROP, focusPoint: DEFAULT_FP });
+    img.onerror = () => patch({ imageId: id, imageUrl: url, imageName: name, naturalW: 0, naturalH: 0, crop: DEFAULT_CROP, focusPoint: DEFAULT_FP });
     img.src = url;
   }, [patch]);
 
+  useEffect(() => {
+    if (!isInitialized || !client) return;
+    client.getValue().then((raw: any) => {
+      if (!raw) return;
+      try {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (!parsed?.src) return;
+        const img = new window.Image();
+        img.onload = () => {
+          const toW = img.naturalWidth  || 100;
+          const toH = img.naturalHeight || 100;
+          setField({
+            imageId:   parsed.id   ?? "",
+            imageUrl:  parsed.src,
+            imageName: parsed.src.split("/").pop()?.split("?")[0] ?? parsed.src,
+            naturalW:  img.naturalWidth,
+            naturalH:  img.naturalHeight,
+            crop: parsed.crop ? {
+              x:      (parsed.crop.x      / toW) * 100,
+              y:      (parsed.crop.y      / toH) * 100,
+              width:  (parsed.crop.width  / toW) * 100,
+              height: (parsed.crop.height / toH) * 100,
+            } : DEFAULT_CROP,
+            focusPoint: parsed.focusPoint ? {
+              x: parsed.focusPoint.x * 100,
+              y: parsed.focusPoint.y * 100,
+            } : DEFAULT_FP,
+          });
+        };
+        img.src = parsed.src;
+      } catch {
+        // invalid stored value — start empty
+      }
+    }).catch(() => {/* no stored value */});
+  }, [isInitialized, client]);
+
   const handleMediaSelect = (item: { id: string; displayName: string; mediaUrl?: string }) => {
     setShowModal(false);
-    if (item.mediaUrl) loadImageUrl(item.mediaUrl, item.displayName);
+    if (item.mediaUrl) loadImageUrl(item.id, item.mediaUrl, item.displayName);
   };
 
   const buildValue = () => {
-    if (!field.imageUrl) return { src: null, crop: null, focusPoint: null };
+    if (!field.imageUrl) return { id: null, src: null, crop: null, focusPoint: null };
     const toW = field.naturalW || 100;
     const toH = field.naturalH || 100;
     return {
-      src:  field.imageName,
+      id:  field.imageId,
+      src: field.imageUrl,
       crop: {
         x:      Math.round((field.crop.x      / 100) * toW),
         y:      Math.round((field.crop.y      / 100) * toH),
@@ -247,12 +326,12 @@ function CropFieldExtension() {
           <div style={{ padding: "0 8px 8px" }}>
             <div style={{ display: "flex", gap: 3, marginBottom: 3 }}>
               {ASPECTS.slice(0, 3).map(a => (
-                <AspectBtn key={a.key} aspect={a} selected={aspectKey === a.key} onClick={() => setAspectKey(a.key)} />
+                <AspectBtn key={a.key} aspect={a} selected={aspectKey === a.key} onClick={() => handleAspectChange(a.key, a.value)} />
               ))}
             </div>
             <div style={{ display: "flex", gap: 3 }}>
               {ASPECTS.slice(3).map(a => (
-                <AspectBtn key={a.key} aspect={a} selected={aspectKey === a.key} onClick={() => setAspectKey(a.key)} />
+                <AspectBtn key={a.key} aspect={a} selected={aspectKey === a.key} onClick={() => handleAspectChange(a.key, a.value)} />
               ))}
             </div>
           </div>
@@ -297,9 +376,14 @@ function CropFieldExtension() {
             <div style={{ borderTop: "1px solid #1e1e1e" }}>
               <SectionLabel>Live Previews</SectionLabel>
               <div style={{ padding: "0 8px 12px", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
-                {PREVIEWS.map(({ label, w, h }) => (
+                {PREVIEWS.map(({ label, ar, w, h }) => (
                   <div key={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                    <CropPreview imageUrl={field.imageUrl!} crop={field.crop} width={w} height={h} />
+                    <CropPreview
+                      imageUrl={field.imageUrl!}
+                      crop={computeFocusCrop(ar, field.naturalW, field.naturalH, field.focusPoint)}
+                      width={w}
+                      height={h}
+                    />
                     <span style={{ fontSize: 9, color: "#444" }}>{label}</span>
                   </div>
                 ))}
