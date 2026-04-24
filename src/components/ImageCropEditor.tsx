@@ -104,16 +104,6 @@ export default function ImageCropEditor({
     window.addEventListener("mouseup", onUp);
   }, [crop, aspectRatio, onCropChange]);
 
-  const onContainerClick = (e: React.MouseEvent) => {
-    if (mode !== "focuspoint" || ibRef.current.w === 0) return;
-    const cr = containerRef.current!.getBoundingClientRect();
-    const b = ibRef.current;
-    onFocusPointChange({
-      x: clamp(((e.clientX - cr.left - b.x) / b.w) * 100, 0, 100),
-      y: clamp(((e.clientY - cr.top  - b.y) / b.h) * 100, 0, 100),
-    });
-  };
-
   const cx = ib.x + (crop.x      / 100) * ib.w;
   const cy = ib.y + (crop.y      / 100) * ib.h;
   const cw =        (crop.width  / 100) * ib.w;
@@ -130,6 +120,14 @@ export default function ImageCropEditor({
   const fpX = ib.x + (focusPoint.x / 100) * ib.w;
   const fpY = ib.y + (focusPoint.y / 100) * ib.h;
 
+  const handleFocusClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    onFocusPointChange({
+      x: clamp(((e.clientX - rect.left) / rect.width)  * 100, 0, 100),
+      y: clamp(((e.clientY - rect.top)  / rect.height) * 100, 0, 100),
+    });
+  };
+
   return (
     <div
       ref={containerRef}
@@ -137,9 +135,7 @@ export default function ImageCropEditor({
         position: "relative", width: "100%", height: "100%",
         overflow: "hidden", display: "flex", alignItems: "center",
         justifyContent: "center",
-        cursor: mode === "focuspoint" ? "crosshair" : "default",
       }}
-      onClick={onContainerClick}
     >
       <img
         ref={imgRef}
@@ -178,6 +174,19 @@ export default function ImageCropEditor({
         </div>
       )}
 
+      {/* Focus-point mode: clickable overlay exactly over the image */}
+      {mode === "focuspoint" && ib.w > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            left: ib.x, top: ib.y, width: ib.w, height: ib.h,
+            cursor: "crosshair",
+          }}
+          onClick={handleFocusClick}
+        />
+      )}
+
+      {/* Focus-point crosshair — always on top, pointer-events none */}
       {mode === "focuspoint" && ib.w > 0 && (
         <div style={{ position: "absolute", left: fpX - 16, top: fpY - 16, width: 32, height: 32, pointerEvents: "none" }}>
           <div style={{ position: "absolute", left: 15, top: 0, width: 2, height: 32, background: "#ff3333" }} />
