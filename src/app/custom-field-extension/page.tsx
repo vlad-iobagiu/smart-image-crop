@@ -152,30 +152,22 @@ function CropFieldExtension() {
       if (!raw) return;
       try {
         const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        if (!parsed?.src) return;
+        const url = parsed.mediaUrl ?? parsed.src;
+        if (!url) return;
         const img = new window.Image();
         img.onload = () => {
-          const toW = img.naturalWidth  || 100;
-          const toH = img.naturalHeight || 100;
+          const fp = parsed.focalPoint ?? parsed.focusPoint;
           setField({
-            imageId:   parsed.id   ?? "",
-            imageUrl:  parsed.src,
-            imageName: parsed.src.split("/").pop()?.split("?")[0] ?? parsed.src,
-            naturalW:  img.naturalWidth,
-            naturalH:  img.naturalHeight,
-            crop: parsed.crop ? {
-              x:      (parsed.crop.x      / toW) * 100,
-              y:      (parsed.crop.y      / toH) * 100,
-              width:  (parsed.crop.width  / toW) * 100,
-              height: (parsed.crop.height / toH) * 100,
-            } : DEFAULT_CROP,
-            focusPoint: parsed.focusPoint ? {
-              x: parsed.focusPoint.x * 100,
-              y: parsed.focusPoint.y * 100,
-            } : DEFAULT_FP,
+            imageId:    "",
+            imageUrl:   url,
+            imageName:  url.split("/").pop()?.split("?")[0] ?? url,
+            naturalW:   img.naturalWidth,
+            naturalH:   img.naturalHeight,
+            crop:       DEFAULT_CROP,
+            focusPoint: fp ? { x: fp.x * 100, y: fp.y * 100 } : DEFAULT_FP,
           });
         };
-        img.src = parsed.src;
+        img.src = url;
       } catch {
         // invalid stored value — start empty
       }
@@ -187,28 +179,37 @@ function CropFieldExtension() {
     if (item.mediaUrl) loadImageUrl(item.id, item.mediaUrl, item.displayName);
   };
 
+  const BREAKPOINT_DEFS = [
+    { key: "desktop", ar: 16 / 9,  label: "16:9" },
+    { key: "tablet",  ar: 4  / 3,  label: "4:3"  },
+    { key: "mobile",  ar: 1,       label: "1:1"  },
+  ] as const;
+
+  const toFrac = (v: number) => parseFloat((v / 100).toFixed(6));
+
   const buildValue = () => {
-    if (!field.imageUrl) return { id: null, src: null, crop: null, focusPoint: null };
-    const toW = field.naturalW || 100;
-    const toH = field.naturalH || 100;
+    if (!field.imageUrl) return null;
+    const breakpoints: Record<string, { aspectRatio: string; crop: { x: number; y: number; width: number; height: number } }> = {};
+    for (const { key, ar, label } of BREAKPOINT_DEFS) {
+      const c = computeFocusCrop(ar, field.naturalW, field.naturalH, field.focusPoint);
+      breakpoints[key] = {
+        aspectRatio: label,
+        crop: { x: toFrac(c.x), y: toFrac(c.y), width: toFrac(c.width), height: toFrac(c.height) },
+      };
+    }
     return {
-      id:  field.imageId,
-      src: field.imageUrl,
-      crop: {
-        x:      Math.round((field.crop.x      / 100) * toW),
-        y:      Math.round((field.crop.y      / 100) * toH),
-        width:  Math.round((field.crop.width  / 100) * toW),
-        height: Math.round((field.crop.height / 100) * toH),
-      },
-      focusPoint: {
-        x: Math.round(field.focusPoint.x) / 100,
-        y: Math.round(field.focusPoint.y) / 100,
-      },
+      mediaId:    field.imageId,
+      mediaUrl:   field.imageUrl,
+      focalPoint: { x: toFrac(field.focusPoint.x), y: toFrac(field.focusPoint.y) },
+      breakpoints,
     };
   };
 
-  const handleApply = () => client?.setValue(JSON.stringify(buildValue()));
-  const fieldValue  = buildValue();
+  const handleApply = () => {
+    const val = buildValue();
+    if (val) client?.setValue(JSON.stringify(val));
+  };
+  const fieldValue = buildValue();
 
   if (!isInitialized) {
     return <div style={{ display: "flex", height: "100vh", alignItems: "center", justifyContent: "center", background: "#111", color: "#555", fontFamily: "sans-serif", fontSize: 13 }}>Initializing…</div>;

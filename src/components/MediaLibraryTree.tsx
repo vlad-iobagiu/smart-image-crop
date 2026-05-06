@@ -339,6 +339,7 @@ export default function MediaLibraryTree({
         padding: 8,
         maxHeight: 480,
         overflowY: "auto",
+        color: "#111",
       }}
     >
       <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 13, color: "#555" }}>
